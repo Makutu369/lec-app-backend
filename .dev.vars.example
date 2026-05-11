@@ -1,0 +1,6 @@
+# Neon Database Connection String
+# Get this from your Neon dashboard
+DATABASE_URL=postgresql://username:password@ep-xxxxx.us-east-2.aws.neon.tech/dbname?sslmode=require
+
+# JWT Secret for signing tokens
+JWT_SECRET=your-jwt-secret-here
