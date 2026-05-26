@@ -4,6 +4,7 @@ import authRoutes from "../routes/auth";
 import coursesRoutes from "../routes/courses";
 import sectionsRoutes from "../routes/sections";
 import megaCentersRoutes from "../routes/mega-centers";
+import examsRoutes from "../routes/exams";
 
 type Env = {
   Bindings: {
@@ -14,18 +15,21 @@ type Env = {
 
 const app = new Hono<Env>();
 
-// ─── CORS ───────────────────────────────────────────────────────────────────
 app.use(
   "/api/*",
   cors({
-    origin: "*",
+    origin: (origin) => origin || "*",
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization"],
     maxAge: 86400,
   })
 );
 
-// ─── Health Check ───────────────────────────────────────────────────────────
+app.onError((err, c) => {
+  console.error("Unhandled error:", err);
+  return c.json({ error: "Internal server error" }, 500);
+});
+
 app.get("/api/", (c) =>
   c.json({
     name: "LEC App Backend",
@@ -34,10 +38,10 @@ app.get("/api/", (c) =>
   })
 );
 
-// ─── Routes ─────────────────────────────────────────────────────────────────
 app.route("/api/auth", authRoutes);
 app.route("/api/courses", coursesRoutes);
 app.route("/api/sections", sectionsRoutes);
 app.route("/api/mega-centers", megaCentersRoutes);
+app.route("/api/exams", examsRoutes);
 
 export default app;

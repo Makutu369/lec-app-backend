@@ -4,5 +4,6 @@
 		"tsBuildInfoFile": "./node_modules/.tmp/tsconfig.worker.tsbuildinfo",
 		"types": ["vite/client", "./worker-configuration.d.ts"]
 	},
-	"include": ["src/worker", "src/routes", "src/middleware", "src/lib", "src/db"]
+	"include": ["src/worker", "src/routes", "src/middleware", "src/lib", "src/db"],
+	"exclude": ["**/__tests__/**", "**/*.test.ts"]
 }

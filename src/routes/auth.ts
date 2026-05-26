@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { eq, and } from "drizzle-orm";
+import { z } from "zod";
 import { createDb } from "../db";
 import { users, passwordResets } from "../db/schema";
 import { hashPassword, comparePassword } from "../lib/password";
@@ -14,23 +15,59 @@ type Env = {
 
 const auth = new Hono<Env>();
 
-// ─── Helper: strip password from user object ────────────────────────────────
+const signinSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(1),
+});
+
+const signupSchema = z.object({
+  firstName: z.string().min(1).max(100),
+  lastName: z.string().min(1).max(100),
+  email: z.string().email(),
+  password: z.string().min(6).max(128),
+  confirmPassword: z.string().min(6).max(128),
+  megaCenterId: z.string().nullable().optional(),
+  userLocation: z.string().max(200).nullable().optional(),
+}).refine((d) => d.password === d.confirmPassword, {
+  message: "Passwords do not match",
+  path: ["confirmPassword"],
+});
+
+const forgotPasswordSchema = z.object({
+  email: z.string().email(),
+});
+
+const verifyResetCodeSchema = z.object({
+  email: z.string().email(),
+  code: z.string().length(6),
+});
+
+const resetPasswordSchema = z.object({
+  email: z.string().email(),
+  code: z.string().length(6),
+  newPassword: z.string().min(6).max(128),
+});
+
 function sanitizeUser(user: typeof users.$inferSelect) {
-  const { password: _, ...safe } = user;
+  const { password, ...safe } = user;
+  void password;
   return safe;
 }
 
-// ─── POST /api/auth/signin ──────────────────────────────────────────────────
 auth.post("/signin", async (c) => {
-  const { email, password } = await c.req.json<{
-    email: string;
-    password: string;
-  }>();
-
-  if (!email || !password) {
-    return c.json({ error: "Email and password are required" }, 400);
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
   }
 
+  const parsed = signinSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: parsed.error.issues[0].message }, 400);
+  }
+
+  const { email, password } = parsed.data;
   const db = createDb(c.env.DATABASE_URL);
 
   const [user] = await db
@@ -56,35 +93,22 @@ auth.post("/signin", async (c) => {
   return c.json({ token, user: sanitizeUser(user) });
 });
 
-// ─── POST /api/auth/signup ──────────────────────────────────────────────────
 auth.post("/signup", async (c) => {
-  const body = await c.req.json<{
-    firstName: string;
-    lastName: string;
-    email: string;
-    password: string;
-    confirmPassword: string;
-    megaCenterId?: string;
-    userLocation?: string;
-  }>();
-
-  const { firstName, lastName, email, password, confirmPassword, megaCenterId, userLocation } = body;
-
-  if (!firstName || !lastName || !email || !password) {
-    return c.json({ error: "All fields are required" }, 400);
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
   }
 
-  if (password !== confirmPassword) {
-    return c.json({ error: "Passwords do not match" }, 400);
+  const parsed = signupSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: parsed.error.issues[0].message }, 400);
   }
 
-  if (password.length < 6) {
-    return c.json({ error: "Password must be at least 6 characters" }, 400);
-  }
-
+  const { firstName, lastName, email, password, megaCenterId, userLocation } = parsed.data;
   const db = createDb(c.env.DATABASE_URL);
 
-  // Check if user already exists
   const [existing] = await db
     .select()
     .from(users)
@@ -118,17 +142,22 @@ auth.post("/signup", async (c) => {
   return c.json({ token, user: sanitizeUser(newUser) }, 201);
 });
 
-// ─── POST /api/auth/forgot-password ─────────────────────────────────────────
 auth.post("/forgot-password", async (c) => {
-  const { email } = await c.req.json<{ email: string }>();
-
-  if (!email) {
-    return c.json({ error: "Email is required" }, 400);
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
   }
 
+  const parsed = forgotPasswordSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: parsed.error.issues[0].message }, 400);
+  }
+
+  const { email } = parsed.data;
   const db = createDb(c.env.DATABASE_URL);
 
-  // Check user exists (don't reveal whether it does)
   const [user] = await db
     .select()
     .from(users)
@@ -136,20 +165,18 @@ auth.post("/forgot-password", async (c) => {
     .limit(1);
 
   if (!user) {
-    // Still return success to prevent email enumeration
     return c.json({ message: "If an account exists, a reset code has been sent" });
   }
 
-  // Generate a 6-digit code
-  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const codeBytes = crypto.getRandomValues(new Uint8Array(4));
+  const code = Array.from(codeBytes)
+    .map((b) => (b % 10).toString())
+    .join("");
 
-  // Expires in 15 minutes
   const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
 
-  // Delete any existing reset codes for this email
   await db.delete(passwordResets).where(eq(passwordResets.email, email.toLowerCase().trim()));
 
-  // Insert new code
   await db.insert(passwordResets).values({
     email: email.toLowerCase().trim(),
     code,
@@ -157,19 +184,25 @@ auth.post("/forgot-password", async (c) => {
   });
 
   // TODO: Send email with code (integrate your email provider)
-  console.log(`[AUTH] Password reset code for ${email}: ${code}`);
+  // Intentionally NOT logging the code to avoid exposing it in production logs
 
   return c.json({ message: "If an account exists, a reset code has been sent" });
 });
 
-// ─── POST /api/auth/verify-reset-code ───────────────────────────────────────
 auth.post("/verify-reset-code", async (c) => {
-  const { email, code } = await c.req.json<{ email: string; code: string }>();
-
-  if (!email || !code) {
-    return c.json({ error: "Email and code are required" }, 400);
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
   }
 
+  const parsed = verifyResetCodeSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: parsed.error.issues[0].message }, 400);
+  }
+
+  const { email, code } = parsed.data;
   const db = createDb(c.env.DATABASE_URL);
 
   const [reset] = await db
@@ -194,25 +227,22 @@ auth.post("/verify-reset-code", async (c) => {
   return c.json({ valid: true });
 });
 
-// ─── POST /api/auth/reset-password ──────────────────────────────────────────
 auth.post("/reset-password", async (c) => {
-  const { email, code, newPassword } = await c.req.json<{
-    email: string;
-    code: string;
-    newPassword: string;
-  }>();
-
-  if (!email || !code || !newPassword) {
-    return c.json({ error: "Email, code, and new password are required" }, 400);
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
   }
 
-  if (newPassword.length < 6) {
-    return c.json({ error: "Password must be at least 6 characters" }, 400);
+  const parsed = resetPasswordSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: parsed.error.issues[0].message }, 400);
   }
 
+  const { email, code, newPassword } = parsed.data;
   const db = createDb(c.env.DATABASE_URL);
 
-  // Verify code again
   const [reset] = await db
     .select()
     .from(passwordResets)
@@ -230,13 +260,11 @@ auth.post("/reset-password", async (c) => {
 
   const hashed = await hashPassword(newPassword);
 
-  // Update user password
   await db
     .update(users)
     .set({ password: hashed })
     .where(eq(users.email, email.toLowerCase().trim()));
 
-  // Clean up reset code
   await db.delete(passwordResets).where(eq(passwordResets.email, email.toLowerCase().trim()));
 
   return c.json({ message: "Password has been reset successfully" });

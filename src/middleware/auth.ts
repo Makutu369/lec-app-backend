@@ -11,10 +11,6 @@ type Env = {
   };
 };
 
-/**
- * Middleware that verifies the Bearer token from the Authorization header,
- * then sets `c.var.user` with the decoded JWT payload.
- */
 export const authGuard = createMiddleware<Env>(async (c, next) => {
   const authHeader = c.req.header("Authorization");
 
@@ -22,7 +18,11 @@ export const authGuard = createMiddleware<Env>(async (c, next) => {
     return c.json({ error: "Missing or invalid authorization header" }, 401);
   }
 
-  const token = authHeader.slice(7);
+  const token = authHeader.slice(7).trim();
+
+  if (!token) {
+    return c.json({ error: "Missing or invalid authorization header" }, 401);
+  }
 
   try {
     const payload = await verifyToken(token, c.env.JWT_SECRET);
