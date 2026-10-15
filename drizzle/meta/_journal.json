@@ -29,6 +29,13 @@
       "when": 1792104729403,
       "tag": "0003_refresh_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792105103252,
+      "tag": "0004_certificates",
+      "breakpoints": true
     }
   ]
 }
