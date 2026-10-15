@@ -261,6 +261,43 @@ export const examAttempts = pgTable(
   ]
 );
 
+export const certificates = pgTable(
+  "certificates",
+  {
+    id: uuid()
+      .default(sql`gen_random_uuid()`)
+      .primaryKey()
+      .notNull(),
+    userId: uuid().notNull(),
+    examId: uuid().notNull(),
+    // The first passing attempt that earned the certificate.
+    attemptId: uuid().notNull(),
+    certificateNumber: varchar({ length: 32 }).notNull(),
+    score: integer().notNull(),
+    issuedAt: timestamp({ mode: "string" }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "FK_certificates_user",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.examId],
+      foreignColumns: [exams.id],
+      name: "FK_certificates_exam",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.attemptId],
+      foreignColumns: [examAttempts.id],
+      name: "FK_certificates_attempt",
+    }).onDelete("cascade"),
+    unique("UQ_certificates_user_exam").on(table.userId, table.examId),
+    unique("UQ_certificates_number").on(table.certificateNumber),
+    index("idx_certificates_user_id").on(table.userId),
+  ]
+);
+
 // Long-lived sessions. Only a SHA-256 hash of each refresh token is stored;
 // tokens are single-use and rotated on every refresh.
 export const refreshTokens = pgTable(
@@ -301,3 +338,4 @@ export type ExamEnrollment = typeof examEnrollments.$inferSelect;
 export type Question = typeof questions.$inferSelect;
 export type NewQuestion = typeof questions.$inferInsert;
 export type ExamAttempt = typeof examAttempts.$inferSelect;
+export type Certificate = typeof certificates.$inferSelect;

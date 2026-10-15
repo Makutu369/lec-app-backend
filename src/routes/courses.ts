@@ -1,12 +1,16 @@
 import { Hono } from "hono";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, desc } from "drizzle-orm";
 import { createDb } from "../db";
 import {
   courses,
   sections,
   enrollments,
   progress,
+  exams,
+  examEnrollments,
+  examAttempts,
 } from "../db/schema";
+import { getCourseExamAccess, findCertificate } from "../lib/course-exam";
 import { authGuard } from "../middleware/auth";
 import type { JwtPayload } from "../lib/jwt";
 
@@ -144,6 +148,58 @@ coursesRouter.get("/:courseId/progress", authGuard, async (c) => {
       sectionId: p.sectionId,
       completed: p.completed,
     })),
+  });
+});
+
+// GET /api/courses/:courseId/exam - the course's final exam with the current
+// user's standing: lesson progress, whether it's unlocked (all lessons done,
+// or paid), best score and certificate.
+coursesRouter.get("/:courseId/exam", authGuard, async (c) => {
+  const { courseId } = c.req.param();
+  const user = c.get("user");
+  const db = createDb(c.env.DATABASE_URL);
+
+  const [exam] = await db
+    .select()
+    .from(exams)
+    .where(and(eq(exams.courseId, courseId), eq(exams.isPublished, true)))
+    .orderBy(desc(exams.createdAt))
+    .limit(1);
+
+  if (!exam) {
+    return c.json({ exam: null });
+  }
+
+  const access = await getCourseExamAccess(db, user.sub, courseId);
+
+  const [examEnrollment] = await db
+    .select({ paidAt: examEnrollments.paidAt })
+    .from(examEnrollments)
+    .where(
+      and(eq(examEnrollments.userId, user.sub), eq(examEnrollments.examId, exam.id))
+    )
+    .limit(1);
+
+  const attempts = await db
+    .select({ score: examAttempts.score, passed: examAttempts.passed })
+    .from(examAttempts)
+    .where(
+      and(eq(examAttempts.userId, user.sub), eq(examAttempts.examId, exam.id))
+    );
+
+  const certificate = await findCertificate(db, user.sub, exam.id);
+
+  return c.json({
+    exam,
+    ...access,
+    // Matches the take/submit rule: course completed, or exam paid for.
+    unlocked: access.unlocked || Boolean(examEnrollment?.paidAt),
+    attemptsCount: attempts.length,
+    bestScore: attempts.length
+      ? Math.max(...attempts.map((a) => a.score))
+      : null,
+    passed: attempts.some((a) => a.passed),
+    certificate: certificate ?? null,
   });
 });
 
