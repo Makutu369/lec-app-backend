@@ -15,6 +15,13 @@
       "when": 1779760590618,
       "tag": "0001_next_retro_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792069663120,
+      "tag": "0002_course_exams_certificates",
+      "breakpoints": true
     }
   ]
 }

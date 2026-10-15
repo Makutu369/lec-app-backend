@@ -1,13 +1,17 @@
 import { Hono } from "hono";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { createDb } from "../db";
 import {
+  courses,
   exams,
   examEnrollments,
   questions,
   examAttempts,
 } from "../db/schema";
+import type { Db } from "../db";
+import type { Exam } from "../db/schema";
+import { getCourseExamAccess, issueCertificate } from "../lib/course-exam";
 import { authGuard } from "../middleware/auth";
 import { adminGuard } from "../middleware/admin";
 import type { JwtPayload } from "../lib/jwt";
@@ -31,6 +35,8 @@ const createExamSchema = z.object({
   description: z.string().nullable().optional(),
   passingScore: z.number().int().min(0).max(100).optional(),
   timeLimitMinutes: z.number().int().positive().nullable().optional(),
+  // Links the exam to a course as its final ("package") exam; null = standalone.
+  courseId: z.string().uuid().nullable().optional(),
 });
 
 const updateExamSchema = z.object({
@@ -38,6 +44,8 @@ const updateExamSchema = z.object({
   description: z.string().nullable().optional(),
   passingScore: z.number().int().min(0).max(100).optional(),
   timeLimitMinutes: z.number().int().positive().nullable().optional(),
+  // Links the exam to a course as its final ("package") exam; null = standalone.
+  courseId: z.string().uuid().nullable().optional(),
 });
 
 const createQuestionSchema = z.object({
@@ -62,6 +70,7 @@ const importExamSchema = z.object({
     description: z.string().nullable().optional(),
     passingScore: z.number().int().min(0).max(100).optional(),
     timeLimitMinutes: z.number().int().positive().nullable().optional(),
+    courseId: z.string().uuid().nullable().optional(),
   }),
   questions: z.array(
     z.object({
@@ -77,6 +86,30 @@ const importExamSchema = z.object({
 const submitExamSchema = z.object({
   answers: z.record(z.string(), z.array(z.number().int().min(0))),
 });
+
+async function courseExists(db: Db, courseId: string): Promise<boolean> {
+  const [course] = await db
+    .select({ id: courses.id })
+    .from(courses)
+    .where(eq(courses.id, courseId))
+    .limit(1);
+  return Boolean(course);
+}
+
+/** Error message when a course exam is still locked for this user, else null. */
+async function courseExamLockReason(
+  db: Db,
+  userId: string,
+  exam: Exam
+): Promise<string | null> {
+  if (!exam.courseId) return null;
+  const access = await getCourseExamAccess(db, userId, exam.courseId);
+  if (!access.enrolled) return "Enroll in the course to take its exam";
+  if (!access.unlocked) {
+    return `Complete all lessons to unlock this exam (${access.completedSections}/${access.totalSections} done)`;
+  }
+  return null;
+}
 
 // --- Admin endpoints ---
 
@@ -96,6 +129,11 @@ examsRouter.post("/import", authGuard, adminGuard, async (c) => {
 
   const db = createDb(c.env.DATABASE_URL);
 
+  const courseId = parsed.data.exam.courseId ?? null;
+  if (courseId && !(await courseExists(db, courseId))) {
+    return c.json({ error: "Course not found" }, 404);
+  }
+
   const [exam] = await db
     .insert(exams)
     .values({
@@ -103,6 +141,7 @@ examsRouter.post("/import", authGuard, adminGuard, async (c) => {
       description: parsed.data.exam.description ?? null,
       passingScore: parsed.data.exam.passingScore ?? 50,
       timeLimitMinutes: parsed.data.exam.timeLimitMinutes ?? null,
+      courseId,
       isPublished: false,
     })
     .returning();
@@ -136,6 +175,11 @@ examsRouter.post("/", authGuard, adminGuard, async (c) => {
 
   const db = createDb(c.env.DATABASE_URL);
 
+  const courseId = parsed.data.courseId ?? null;
+  if (courseId && !(await courseExists(db, courseId))) {
+    return c.json({ error: "Course not found" }, 404);
+  }
+
   const [exam] = await db
     .insert(exams)
     .values({
@@ -143,6 +187,7 @@ examsRouter.post("/", authGuard, adminGuard, async (c) => {
       description: parsed.data.description ?? null,
       passingScore: parsed.data.passingScore ?? 50,
       timeLimitMinutes: parsed.data.timeLimitMinutes ?? null,
+      courseId,
     })
     .returning();
 
@@ -164,12 +209,14 @@ examsRouter.get("/", authGuard, adminGuard, async (c) => {
   return c.json(all);
 });
 
-// GET /api/exams/published - user listing, must be before /:id
+// GET /api/exams/published - user listing, must be before /:id.
+// Standalone exams only: course exams are reached through their course
+// (GET /api/courses/:courseId/exam) so lessons can't be skipped.
 examsRouter.get("/published", authGuard, async (c) => {
   const db = createDb(c.env.DATABASE_URL);
 
   const all = await db.query.exams.findMany({
-    where: eq(exams.isPublished, true),
+    where: and(eq(exams.isPublished, true), isNull(exams.courseId)),
     orderBy: (exams, { desc }) => [desc(exams.createdAt)],
   });
 
@@ -220,6 +267,10 @@ examsRouter.put("/:id", authGuard, adminGuard, async (c) => {
 
   if (!existing) {
     return c.json({ error: "Exam not found" }, 404);
+  }
+
+  if (parsed.data.courseId && !(await courseExists(db, parsed.data.courseId))) {
+    return c.json({ error: "Course not found" }, 404);
   }
 
   const [updated] = await db
@@ -387,6 +438,11 @@ examsRouter.post("/:id/enroll", authGuard, async (c) => {
     return c.json({ error: "Exam not found or not published" }, 404);
   }
 
+  const lockReason = await courseExamLockReason(db, user.sub, exam);
+  if (lockReason) {
+    return c.json({ error: lockReason }, 403);
+  }
+
   const [existing] = await db
     .select()
     .from(examEnrollments)
@@ -443,6 +499,11 @@ examsRouter.get("/:id/take", authGuard, async (c) => {
     return c.json({ error: "Exam not found" }, 404);
   }
 
+  const lockReason = await courseExamLockReason(db, user.sub, exam);
+  if (lockReason) {
+    return c.json({ error: lockReason }, 403);
+  }
+
   const sanitizedQuestions = exam.questions.map((q) => ({
     id: q.id,
     questionText: q.questionText,
@@ -458,6 +519,7 @@ examsRouter.get("/:id/take", authGuard, async (c) => {
       description: exam.description,
       timeLimitMinutes: exam.timeLimitMinutes,
       passingScore: exam.passingScore,
+      courseId: exam.courseId,
     },
     questions: sanitizedQuestions,
   });
@@ -503,6 +565,11 @@ examsRouter.post("/:id/submit", authGuard, async (c) => {
 
   if (!enrollment) {
     return c.json({ error: "You are not enrolled in this exam" }, 403);
+  }
+
+  const lockReason = await courseExamLockReason(db, user.sub, exam);
+  if (lockReason) {
+    return c.json({ error: lockReason }, 403);
   }
 
   const allQuestions = await db
@@ -551,6 +618,15 @@ examsRouter.post("/:id/submit", authGuard, async (c) => {
     })
     .returning();
 
+  const certificate = passed
+    ? await issueCertificate(db, {
+        userId: user.sub,
+        examId: id,
+        attemptId: attempt.id,
+        score,
+      })
+    : null;
+
   return c.json({
     attemptId: attempt.id,
     score,
@@ -558,6 +634,7 @@ examsRouter.post("/:id/submit", authGuard, async (c) => {
     totalQuestions: allQuestions.length,
     correctCount,
     results,
+    certificate,
   });
 });
 

@@ -162,10 +162,18 @@ export const exams = pgTable(
     passingScore: integer().default(50).notNull(),
     timeLimitMinutes: integer(),
     isPublished: boolean().default(false).notNull(),
+    // Set when the exam is a course's final exam ("package" exam); null for standalone exams.
+    courseId: uuid(),
     createdAt: timestamp({ mode: "string" }).defaultNow().notNull(),
   },
   (table) => [
+    foreignKey({
+      columns: [table.courseId],
+      foreignColumns: [courses.id],
+      name: "FK_exams_course",
+    }).onDelete("set null"),
     index("idx_exams_published").on(table.isPublished),
+    index("idx_exams_course_id").on(table.courseId),
   ]
 );
 
@@ -252,6 +260,43 @@ export const examAttempts = pgTable(
   ]
 );
 
+export const certificates = pgTable(
+  "certificates",
+  {
+    id: uuid()
+      .default(sql`gen_random_uuid()`)
+      .primaryKey()
+      .notNull(),
+    userId: uuid().notNull(),
+    examId: uuid().notNull(),
+    // The first passing attempt that earned the certificate.
+    attemptId: uuid().notNull(),
+    certificateNumber: varchar({ length: 32 }).notNull(),
+    score: integer().notNull(),
+    issuedAt: timestamp({ mode: "string" }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "FK_certificates_user",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.examId],
+      foreignColumns: [exams.id],
+      name: "FK_certificates_exam",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.attemptId],
+      foreignColumns: [examAttempts.id],
+      name: "FK_certificates_attempt",
+    }).onDelete("cascade"),
+    unique("UQ_certificates_user_exam").on(table.userId, table.examId),
+    unique("UQ_certificates_number").on(table.certificateNumber),
+    index("idx_certificates_user_id").on(table.userId),
+  ]
+);
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Course = typeof courses.$inferSelect;
@@ -266,3 +311,4 @@ export type ExamEnrollment = typeof examEnrollments.$inferSelect;
 export type Question = typeof questions.$inferSelect;
 export type NewQuestion = typeof questions.$inferInsert;
 export type ExamAttempt = typeof examAttempts.$inferSelect;
+export type Certificate = typeof certificates.$inferSelect;

@@ -9,6 +9,7 @@ import {
   examEnrollments,
   questions,
   examAttempts,
+  certificates,
 } from "./schema";
 
 export const usersRelations = relations(users, ({ many }) => ({
@@ -16,11 +17,13 @@ export const usersRelations = relations(users, ({ many }) => ({
   progresses: many(progress),
   examEnrollments: many(examEnrollments),
   examAttempts: many(examAttempts),
+  certificates: many(certificates),
 }));
 
 export const coursesRelations = relations(courses, ({ many }) => ({
   sections: many(sections),
   enrollments: many(enrollments),
+  exams: many(exams),
 }));
 
 export const sectionsRelations = relations(sections, ({ one, many }) => ({
@@ -53,10 +56,15 @@ export const progressRelations = relations(progress, ({ one }) => ({
   }),
 }));
 
-export const examsRelations = relations(exams, ({ many }) => ({
+export const examsRelations = relations(exams, ({ one, many }) => ({
+  course: one(courses, {
+    fields: [exams.courseId],
+    references: [courses.id],
+  }),
   questions: many(questions),
   enrollments: many(examEnrollments),
   attempts: many(examAttempts),
+  certificates: many(certificates),
 }));
 
 export const examEnrollmentsRelations = relations(examEnrollments, ({ one }) => ({
@@ -85,5 +93,20 @@ export const examAttemptsRelations = relations(examAttempts, ({ one }) => ({
   exam: one(exams, {
     fields: [examAttempts.examId],
     references: [exams.id],
+  }),
+}));
+
+export const certificatesRelations = relations(certificates, ({ one }) => ({
+  user: one(users, {
+    fields: [certificates.userId],
+    references: [users.id],
+  }),
+  exam: one(exams, {
+    fields: [certificates.examId],
+    references: [exams.id],
+  }),
+  attempt: one(examAttempts, {
+    fields: [certificates.attemptId],
+    references: [examAttempts.id],
   }),
 }));
