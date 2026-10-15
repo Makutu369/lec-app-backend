@@ -309,9 +309,10 @@ const endpoints: Endpoint[] = [
         icon: "👤",
         steps: [
           { method: "GET", path: "/api/exams/published", label: "Browse exams", description: "View all published exams" },
-          { method: "POST", path: "/api/exams/:id/enroll", label: "Enroll", description: "Register for the exam" },
-          { method: "GET", path: "/api/exams/:id/take", label: "Take exam", description: "Fetch questions (answers hidden)" },
-          { method: "POST", path: "/api/exams/:id/submit", label: "Submit answers", description: "Send answers, receive score + results" },
+          { method: "POST", path: "/api/exams/:id/enroll", label: "Enroll", description: "Register for the exam. For course-linked exams, enroll freely. For standalone exams, set paid=true." },
+          { method: "POST", path: "/api/exams/:id/confirm-payment", label: "Confirm payment (optional)", description: "Confirm payment after external processing. Skip if paid at enrollment or if course is completed." },
+          { method: "GET", path: "/api/exams/:id/take", label: "Take exam", description: "Fetch questions. Access requires: payment OR completed course." },
+          { method: "POST", path: "/api/exams/:id/submit", label: "Submit answers", description: "Send answers, receive score + results. Same access rules as take." },
           { method: "GET", path: "/api/exams/:id/attempts", label: "Review history", description: "View past attempts and scores" },
         ]
       }
@@ -322,19 +323,21 @@ const endpoints: Endpoint[] = [
     method: "POST",
     path: "/api/exams",
     auth: true,
-    description: "Create a new exam. Requires admin role.",
+    description: "Create a new exam. Link to a course via courseId to enable course-completion-based access. Requires admin role.",
     category: "Exams",
-    payload: { title: "Born Again Quiz", description: "Test your understanding", passingScore: 60, timeLimitMinutes: 30 },
+    payload: { title: "Born Again Quiz", description: "Test your understanding", courseId: "uuid", passingScore: 60, timeLimitMinutes: 30 },
     payloadFields: [
       { name: "title", type: "string", required: true, description: "Display title of the exam." },
       { name: "description", type: "string", required: false, description: "Optional description of the exam." },
+      { name: "courseId", type: "uuid", required: false, description: "Link to a course. When set, users who complete the course gain free access. When null, payment is required." },
       { name: "passingScore", type: "number", required: false, description: "Percentage required to pass (default: 50)." },
       { name: "timeLimitMinutes", type: "number", required: false, description: "Optional time limit in minutes." }
     ],
-    response: { id: "uuid", title: "Born Again Quiz", passingScore: 60, isPublished: false, createdAt: "2026-05-26T00:00:00Z" },
+    response: { id: "uuid", title: "Born Again Quiz", courseId: "uuid", passingScore: 60, isPublished: false, createdAt: "2026-05-26T00:00:00Z" },
     responseFields: [
       { name: "id", type: "uuid", required: true, description: "Unique exam identifier." },
       { name: "title", type: "string", required: true, description: "Exam title." },
+      { name: "courseId", type: "uuid", required: false, description: "Linked course ID, if any." },
       { name: "passingScore", type: "number", required: true, description: "Passing score percentage." },
       { name: "isPublished", type: "boolean", required: true, description: "Whether the exam is visible to users." }
     ]
@@ -347,13 +350,14 @@ const endpoints: Endpoint[] = [
     description: "Bulk import an exam with all questions in a single request. Requires admin role.",
     category: "Exams",
     payload: {
-      exam: { title: "Born Again Quiz", description: "Test your understanding", passingScore: 60 },
+      exam: { title: "Born Again Quiz", description: "Test your understanding", courseId: "uuid", passingScore: 60 },
       questions: [
         { questionText: "To be born again is:", options: ["from womb", "from above", "from heaven", "stop bad things"], correctIndices: [1, 2], scripture: null, sortOrder: 0 }
       ]
     },
     payloadFields: [
-      { name: "exam", type: "object", required: true, description: "Exam metadata (title, description, passingScore, timeLimitMinutes)." },
+      { name: "exam", type: "object", required: true, description: "Exam metadata (title, description, courseId, passingScore, timeLimitMinutes)." },
+      { name: "exam.courseId", type: "uuid", required: false, description: "Link to a course for course-completion-based access." },
       { name: "questions", type: "array", required: true, description: "Array of question objects (min 1)." },
       { name: "questions.questionText", type: "string", required: true, description: "The question text." },
       { name: "questions.options", type: "string[]", required: true, description: "Array of answer choices (min 2)." },
@@ -414,10 +418,11 @@ const endpoints: Endpoint[] = [
     auth: true,
     description: "Update exam metadata. Requires admin role.",
     category: "Exams",
-    payload: { title: "Updated Title", passingScore: 70 },
+    payload: { title: "Updated Title", courseId: "uuid", passingScore: 70 },
     payloadFields: [
       { name: "title", type: "string", required: false, description: "New exam title." },
       { name: "description", type: "string", required: false, description: "New description." },
+      { name: "courseId", type: "uuid", required: false, description: "Link/unlink a course for access control." },
       { name: "passingScore", type: "number", required: false, description: "New passing score." },
       { name: "timeLimitMinutes", type: "number", required: false, description: "New time limit." }
     ],
@@ -505,14 +510,35 @@ const endpoints: Endpoint[] = [
     method: "POST",
     path: "/api/exams/:id/enroll",
     auth: true,
-    description: "Enroll the authenticated user in a published exam.",
+    description: "Enroll the authenticated user in a published exam. For course-linked exams, enrollment is free. For exams without a linked course, payment is required at enrollment.",
     category: "Exams",
-    response: { id: "uuid", userId: "uuid", examId: "uuid", createdAt: "2026-05-26T00:00:00Z" },
+    payload: { paid: true },
+    payloadFields: [
+      { name: "paid", type: "boolean", required: false, description: "Set to true to confirm payment at enrollment. Required for exams without a linked courseId." }
+    ],
+    response: { id: "uuid", userId: "uuid", examId: "uuid", paidAt: "2026-05-26T00:00:00Z", createdAt: "2026-05-26T00:00:00Z" },
     responseFields: [
       { name: "id", type: "uuid", required: true, description: "Enrollment record ID." },
       { name: "userId", type: "uuid", required: true, description: "ID of the enrolled user." },
       { name: "examId", type: "uuid", required: true, description: "ID of the exam." },
+      { name: "paidAt", type: "timestamp", required: false, description: "Timestamp when payment was confirmed. Null if not yet paid." },
       { name: "createdAt", type: "timestamp", required: true, description: "Enrollment timestamp." }
+    ]
+  },
+  {
+    id: "exam-confirm-payment",
+    method: "POST",
+    path: "/api/exams/:id/confirm-payment",
+    auth: true,
+    description: "Confirm payment for an exam enrollment after initial registration. Use this when payment is processed externally (e.g., via a payment gateway) after the user has enrolled.",
+    category: "Exams",
+    response: { id: "uuid", userId: "uuid", examId: "uuid", paidAt: "2026-05-26T00:00:00Z", createdAt: "2026-05-26T00:00:00Z" },
+    responseFields: [
+      { name: "id", type: "uuid", required: true, description: "Enrollment record ID." },
+      { name: "userId", type: "uuid", required: true, description: "ID of the enrolled user." },
+      { name: "examId", type: "uuid", required: true, description: "ID of the exam." },
+      { name: "paidAt", type: "timestamp", required: true, description: "Timestamp when payment was confirmed." },
+      { name: "createdAt", type: "timestamp", required: true, description: "Original enrollment timestamp." }
     ]
   },
   {
@@ -520,7 +546,7 @@ const endpoints: Endpoint[] = [
     method: "GET",
     path: "/api/exams/:id/take",
     auth: true,
-    description: "Retrieve exam questions without answers. User must be enrolled.",
+    description: "Retrieve exam questions without answers. Access is granted if the user has paid for the exam or has completed the linked course.",
     category: "Exams",
     response: {
       exam: { id: "uuid", title: "Born Again Quiz", description: "Test your understanding", timeLimitMinutes: 30, passingScore: 60 },
@@ -541,7 +567,7 @@ const endpoints: Endpoint[] = [
     method: "POST",
     path: "/api/exams/:id/submit",
     auth: true,
-    description: "Submit exam answers and receive score with per-question results. User must be enrolled.",
+    description: "Submit exam answers and receive score with per-question results. Access requires payment or a completed linked course.",
     category: "Exams",
     payload: { answers: { "question-uuid-1": [1, 2], "question-uuid-2": [0] } },
     payloadFields: [
@@ -1011,8 +1037,8 @@ function FlowChart({ lanes }: { lanes: FlowLane[] }) {
               {!activeEndpoint.flow && (
               <div className="lg:hidden space-y-8">
                 <h2 className="text-2xl font-bold tracking-tight pb-4 border-b border-border">Example Request</h2>
-                <div className="next-card bg-code-bg border-border/50 shadow-xl">
-                  <div className="flex items-center justify-between mb-4">
+                <div className="rounded-2xl bg-code-bg border border-slate-800 overflow-hidden shadow-xl">
+                  <div className="flex items-center justify-between px-5 py-3 bg-slate-900/40 border-b border-slate-800/80">
                     <div className="flex gap-2">
                       <div className="w-2.5 h-2.5 rounded-full bg-rose-500/30" />
                       <div className="w-2.5 h-2.5 rounded-full bg-amber-500/30" />
@@ -1020,21 +1046,23 @@ function FlowChart({ lanes }: { lanes: FlowLane[] }) {
                     </div>
                     <button
                       onClick={() => copyToClipboard(`curl -X ${activeEndpoint.method} ${API_BASE}${activeEndpoint.path}`, activeEndpoint.id)}
-                      className="p-2 hover:bg-surface-hover rounded-lg text-muted hover:text-foreground transition-all"
+                      className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-slate-200 transition-all cursor-pointer"
                     >
                       {copiedId === activeEndpoint.id ? <Check size={16} className="text-emerald-500" /> : <Copy size={16} />}
                     </button>
                   </div>
-                  <pre className="text-[13px] font-mono leading-relaxed overflow-x-auto p-4 rounded-lg bg-black/5 dark:bg-white/5">
-                    <span className="text-muted/60">curl</span> <span className="text-rose-400 font-bold">-X</span> <span className="text-foreground">{activeEndpoint.method}</span> \<br />
-                    &nbsp;&nbsp;<span className="text-json-string">"{API_BASE}{activeEndpoint.path}"</span> \<br />
-                    {activeEndpoint.payload && (
-                      <>&nbsp;&nbsp;<span className="text-muted/60">-d '{JSON.stringify(activeEndpoint.payload, null, 2)}' \</span><br /></>
-                    )}
-                    {activeEndpoint.auth && (
-                      <>&nbsp;&nbsp;<span className="text-muted/60">-H</span> <span className="text-json-string">"Authorization: Bearer TOKEN"</span></>
-                    )}
-                  </pre>
+                  <div className="p-6">
+                    <pre className="text-[13px] font-mono leading-relaxed overflow-x-auto text-code-text">
+                      <span className="text-slate-400">curl</span> <span className="text-pink-400 font-bold">-X</span> <span className="text-slate-100 font-semibold">{activeEndpoint.method}</span> \<br />
+                      &nbsp;&nbsp;<span className="text-emerald-400">"{API_BASE}{activeEndpoint.path}"</span> \<br />
+                      {activeEndpoint.payload && (
+                        <>&nbsp;&nbsp;<span className="text-slate-400">-d '{JSON.stringify(activeEndpoint.payload, null, 2)}'</span> \<br /></>
+                      )}
+                      {activeEndpoint.auth && (
+                        <>&nbsp;&nbsp;<span className="text-slate-400">-H</span> <span className="text-emerald-400">"Authorization: Bearer TOKEN"</span></>
+                      )}
+                    </pre>
+                  </div>
                 </div>
               </div>
               )}
@@ -1062,25 +1090,25 @@ function FlowChart({ lanes }: { lanes: FlowLane[] }) {
 
             <div className="space-y-6">
               <h4 className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted/60">Example Request</h4>
-              <div className="rounded-2xl bg-code-bg border border-border overflow-hidden shadow-2xl">
-                <div className="flex items-center justify-between px-5 py-3 bg-sidebar/50 border-b border-border">
-                  <span className="text-[10px] font-bold font-mono text-muted/80 uppercase tracking-widest">cURL</span>
+              <div className="rounded-2xl bg-code-bg border border-slate-800 overflow-hidden shadow-2xl">
+                <div className="flex items-center justify-between px-5 py-3 bg-slate-900/40 border-b border-slate-800/80">
+                  <span className="text-[10px] font-bold font-mono text-slate-400 uppercase tracking-widest">cURL</span>
                   <button
                     onClick={() => copyToClipboard(`curl -X ${activeEndpoint.method} ${API_BASE}${activeEndpoint.path}`, activeEndpoint.id)}
-                    className="p-1.5 hover:bg-surface rounded-lg transition-all text-muted hover:text-foreground"
+                    className="p-1.5 hover:bg-slate-800 rounded-lg transition-all text-slate-400 hover:text-slate-200 cursor-pointer"
                   >
                     {copiedId === activeEndpoint.id ? <Check size={16} className="text-emerald-500" /> : <Copy size={16} />}
                   </button>
                 </div>
                 <div className="p-6">
-                  <pre className="text-[13px] font-mono leading-relaxed overflow-x-auto">
-                    <span className="text-muted/60">curl</span> <span className="text-rose-400 font-bold">-X</span> <span className="text-foreground">{activeEndpoint.method}</span> \<br />
-                    &nbsp;&nbsp;<span className="text-json-string">"{API_BASE}{activeEndpoint.path}"</span> \<br />
+                  <pre className="text-[13px] font-mono leading-relaxed overflow-x-auto text-code-text">
+                    <span className="text-slate-400">curl</span> <span className="text-pink-400 font-bold">-X</span> <span className="text-slate-100 font-semibold">{activeEndpoint.method}</span> \<br />
+                    &nbsp;&nbsp;<span className="text-emerald-400">"{API_BASE}{activeEndpoint.path}"</span> \<br />
                     {activeEndpoint.payload && (
-                      <>&nbsp;&nbsp;<span className="text-muted/60">-d '{JSON.stringify(activeEndpoint.payload, null, 2)}' \</span><br /></>
+                      <>&nbsp;&nbsp;<span className="text-slate-400">-d '{JSON.stringify(activeEndpoint.payload, null, 2)}'</span> \<br /></>
                     )}
                     {activeEndpoint.auth && (
-                      <>&nbsp;&nbsp;<span className="text-muted/60">-H</span> <span className="text-json-string">"Authorization: Bearer TOKEN"</span></>
+                      <>&nbsp;&nbsp;<span className="text-slate-400">-H</span> <span className="text-emerald-400">"Authorization: Bearer TOKEN"</span></>
                     )}
                   </pre>
                 </div>
@@ -1092,8 +1120,8 @@ function FlowChart({ lanes }: { lanes: FlowLane[] }) {
                 <h4 className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted/60">Response Body</h4>
                 <div className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-500 text-[9px] font-black uppercase tracking-widest">Status 200</div>
               </div>
-              <div className="rounded-2xl bg-code-bg border border-border p-6 shadow-xl">
-                <div className="text-[13px] font-mono leading-relaxed">
+              <div className="rounded-2xl bg-code-bg border border-slate-800 p-6 shadow-xl">
+                <div className="text-[13px] font-mono leading-relaxed overflow-x-auto">
                   {renderJSON(activeEndpoint.response || { status: "success" })}
                 </div>
               </div>

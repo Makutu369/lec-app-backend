@@ -21,6 +21,7 @@ export const usersRelations = relations(users, ({ many }) => ({
 export const coursesRelations = relations(courses, ({ many }) => ({
   sections: many(sections),
   enrollments: many(enrollments),
+  exams: many(exams),
 }));
 
 export const sectionsRelations = relations(sections, ({ one, many }) => ({
@@ -53,7 +54,11 @@ export const progressRelations = relations(progress, ({ one }) => ({
   }),
 }));
 
-export const examsRelations = relations(exams, ({ many }) => ({
+export const examsRelations = relations(exams, ({ one, many }) => ({
+  course: one(courses, {
+    fields: [exams.courseId],
+    references: [courses.id],
+  }),
   questions: many(questions),
   enrollments: many(examEnrollments),
   attempts: many(examAttempts),

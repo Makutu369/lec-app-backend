@@ -1,4 +1,8 @@
+import { config } from "dotenv";
+import { resolve } from "path";
 import type { Config } from "drizzle-kit";
+
+config({ path: resolve(__dirname, ".dev.vars") });
 
 export default {
   schema: "./src/db/schema.ts",

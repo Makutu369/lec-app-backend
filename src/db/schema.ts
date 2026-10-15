@@ -159,13 +159,21 @@ export const exams = pgTable(
       .notNull(),
     title: varchar({ length: 255 }).notNull(),
     description: text(),
+    courseId: uuid(),
+    price: integer(),
     passingScore: integer().default(50).notNull(),
     timeLimitMinutes: integer(),
     isPublished: boolean().default(false).notNull(),
     createdAt: timestamp({ mode: "string" }).defaultNow().notNull(),
   },
   (table) => [
+    foreignKey({
+      columns: [table.courseId],
+      foreignColumns: [courses.id],
+      name: "FK_exams_course",
+    }).onDelete("set null"),
     index("idx_exams_published").on(table.isPublished),
+    index("idx_exams_course_id").on(table.courseId),
   ]
 );
 
@@ -178,6 +186,7 @@ export const examEnrollments = pgTable(
       .notNull(),
     userId: uuid().notNull(),
     examId: uuid().notNull(),
+    paidAt: timestamp({ mode: "string" }),
     createdAt: timestamp({ mode: "string" }).defaultNow().notNull(),
   },
   (table) => [
