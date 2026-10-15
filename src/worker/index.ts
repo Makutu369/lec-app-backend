@@ -5,6 +5,7 @@ import coursesRoutes from "../routes/courses";
 import sectionsRoutes from "../routes/sections";
 import megaCentersRoutes from "../routes/mega-centers";
 import examsRoutes from "../routes/exams";
+import certificatesRoutes from "../routes/certificates";
 
 type Env = {
   Bindings: {
@@ -43,5 +44,6 @@ app.route("/api/courses", coursesRoutes);
 app.route("/api/sections", sectionsRoutes);
 app.route("/api/mega-centers", megaCentersRoutes);
 app.route("/api/exams", examsRoutes);
+app.route("/api/certificates", certificatesRoutes);
 
 export default app;

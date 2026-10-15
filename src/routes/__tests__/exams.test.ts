@@ -16,8 +16,19 @@ import {
 } from "../../db/schema";
 import { eq } from "drizzle-orm";
 
-const DATABASE_URL = process.env.DATABASE_URL!;
-const JWT_SECRET = process.env.JWT_SECRET!;
+// These tests DELETE every row of every table they touch, so they must never
+// see the real database. They only run against TEST_DATABASE_URL (a separate
+// Neon branch / database), never the DATABASE_URL from .dev.vars.
+const DATABASE_URL = process.env.TEST_DATABASE_URL ?? "";
+if (!DATABASE_URL) {
+  throw new Error(
+    "Set TEST_DATABASE_URL to a disposable test database. These tests wipe all tables."
+  );
+}
+if (DATABASE_URL === process.env.DATABASE_URL) {
+  throw new Error("TEST_DATABASE_URL must not be the same database as DATABASE_URL.");
+}
+const JWT_SECRET = process.env.JWT_SECRET ?? "test-secret";
 
 type Env = {
   Bindings: {
