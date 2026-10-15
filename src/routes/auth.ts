@@ -4,7 +4,12 @@ import { z } from "zod";
 import { createDb } from "../db";
 import { users, passwordResets } from "../db/schema";
 import { hashPassword, comparePassword } from "../lib/password";
-import { signToken } from "../lib/jwt";
+import {
+  issueTokenPair,
+  consumeRefreshToken,
+  revokeRefreshToken,
+  revokeAllForUser,
+} from "../lib/refresh-token";
 
 type Env = {
   Bindings: {
@@ -85,12 +90,9 @@ auth.post("/signin", async (c) => {
     return c.json({ error: "Invalid email or password" }, 401);
   }
 
-  const token = await signToken(
-    { sub: user.id, email: user.email, role: user.role },
-    c.env.JWT_SECRET
-  );
+  const tokens = await issueTokenPair(db, user, c.env.JWT_SECRET);
 
-  return c.json({ token, user: sanitizeUser(user) });
+  return c.json({ ...tokens, user: sanitizeUser(user) });
 });
 
 auth.post("/signup", async (c) => {
@@ -134,12 +136,9 @@ auth.post("/signup", async (c) => {
     })
     .returning();
 
-  const token = await signToken(
-    { sub: newUser.id, email: newUser.email, role: newUser.role },
-    c.env.JWT_SECRET
-  );
+  const tokens = await issueTokenPair(db, newUser, c.env.JWT_SECRET);
 
-  return c.json({ token, user: sanitizeUser(newUser) }, 201);
+  return c.json({ ...tokens, user: sanitizeUser(newUser) }, 201);
 });
 
 auth.post("/forgot-password", async (c) => {
@@ -267,7 +266,76 @@ auth.post("/reset-password", async (c) => {
 
   await db.delete(passwordResets).where(eq(passwordResets.email, email.toLowerCase().trim()));
 
+  // A new password signs the account out everywhere.
+  const [user] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.email, email.toLowerCase().trim()))
+    .limit(1);
+  if (user) await revokeAllForUser(db, user.id);
+
   return c.json({ message: "Password has been reset successfully" });
+});
+
+const refreshSchema = z.object({
+  refreshToken: z.string().min(1),
+});
+
+// POST /api/auth/refresh - swap a refresh token for a new access + refresh token.
+// The old refresh token stops working (rotation).
+auth.post("/refresh", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+
+  const parsed = refreshSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: parsed.error.issues[0].message }, 400);
+  }
+
+  const db = createDb(c.env.DATABASE_URL);
+  const result = await consumeRefreshToken(db, parsed.data.refreshToken);
+
+  if (!result.ok) {
+    return c.json({ error: "Session expired. Please sign in again." }, 401);
+  }
+
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(eq(users.id, result.userId))
+    .limit(1);
+
+  if (!user) {
+    return c.json({ error: "Session expired. Please sign in again." }, 401);
+  }
+
+  const tokens = await issueTokenPair(db, user, c.env.JWT_SECRET);
+
+  return c.json({ ...tokens, user: sanitizeUser(user) });
+});
+
+// POST /api/auth/logout - revoke this device's refresh token.
+auth.post("/logout", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+
+  const parsed = refreshSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: parsed.error.issues[0].message }, 400);
+  }
+
+  const db = createDb(c.env.DATABASE_URL);
+  await revokeRefreshToken(db, parsed.data.refreshToken);
+
+  return c.json({ message: "Signed out" });
 });
 
 export default auth;
