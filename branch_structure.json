@@ -1,0 +1,24 @@
+{
+  "default_branch": "master",
+  "branches": [
+    "feat/exam-certificates-refresh-tokens",
+    "feat/paystack-exam-payments",
+    "feat/push-notifications",
+    "master",
+    "origin"
+  ],
+  "parent": {
+    "feat/exam-certificates-refresh-tokens": "master",
+    "feat/paystack-exam-payments": "master",
+    "feat/push-notifications": "master",
+    "master": null,
+    "origin": "master"
+  },
+  "order": [
+    "master",
+    "feat/exam-certificates-refresh-tokens",
+    "feat/paystack-exam-payments",
+    "feat/push-notifications",
+    "origin"
+  ]
+}

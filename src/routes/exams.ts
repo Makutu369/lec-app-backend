@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, and, desc, inArray } from "drizzle-orm";
+import { eq, and, desc, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { createDb } from "../db";
 import {
@@ -13,6 +13,7 @@ import {
 import { authGuard } from "../middleware/auth";
 import { adminGuard } from "../middleware/admin";
 import type { JwtPayload } from "../lib/jwt";
+import { issueCertificate } from "../lib/course-exam";
 
 type Env = {
   Bindings: {
@@ -247,12 +248,14 @@ examsRouter.get("/", authGuard, adminGuard, async (c) => {
   return c.json(all);
 });
 
-// GET /api/exams/published - user listing, must be before /:id
+// GET /api/exams/published - user listing, must be before /:id.
+// Standalone exams only: a course's exam is shown inside that course
+// (GET /api/courses/:courseId/exam) so students take it after the lessons.
 examsRouter.get("/published", authGuard, async (c) => {
   const db = createDb(c.env.DATABASE_URL);
 
   const all = await db.query.exams.findMany({
-    where: eq(exams.isPublished, true),
+    where: and(eq(exams.isPublished, true), isNull(exams.courseId)),
     with: {
       course: true,
     },
@@ -615,6 +618,7 @@ examsRouter.get("/:id/take", authGuard, async (c) => {
       description: exam.description,
       timeLimitMinutes: exam.timeLimitMinutes,
       passingScore: exam.passingScore,
+      courseId: exam.courseId,
     },
     questions: sanitizedQuestions,
   });
@@ -709,6 +713,16 @@ examsRouter.post("/:id/submit", authGuard, async (c) => {
     })
     .returning();
 
+  // One certificate per user per exam; later passes return the original.
+  const certificate = passed
+    ? await issueCertificate(db, {
+        userId: user.sub,
+        examId: id,
+        attemptId: attempt.id,
+        score,
+      })
+    : null;
+
   return c.json({
     attemptId: attempt.id,
     score,
@@ -716,6 +730,7 @@ examsRouter.post("/:id/submit", authGuard, async (c) => {
     totalQuestions: allQuestions.length,
     correctCount,
     results,
+    certificate,
   });
 });
 
