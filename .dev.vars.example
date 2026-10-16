@@ -4,3 +4,8 @@ DATABASE_URL=postgresql://username:password@ep-xxxxx.us-east-2.aws.neon.tech/dbn
 
 # JWT Secret for signing tokens
 JWT_SECRET=your-jwt-secret-here
+
+# Disposable database for `npm test` (e.g. a Neon branch). The tests delete
+# every row, so this must NOT be the DATABASE_URL above; they refuse to run
+# without it.
+TEST_DATABASE_URL=postgresql://username:password@ep-xxxxx-test.us-east-2.aws.neon.tech/dbname?sslmode=require
