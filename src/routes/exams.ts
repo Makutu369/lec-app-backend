@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, and, desc, inArray, isNull } from "drizzle-orm";
+import { eq, and, desc, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { createDb } from "../db";
 import {
@@ -249,13 +249,14 @@ examsRouter.get("/", authGuard, adminGuard, async (c) => {
 });
 
 // GET /api/exams/published - user listing, must be before /:id.
-// Standalone exams only: a course's exam is shown inside that course
-// (GET /api/courses/:courseId/exam) so students take it after the lessons.
+// Includes course exams with their `course`, so the app can list them and
+// send students to the course; take/submit still require the course to be
+// completed (or the exam paid for).
 examsRouter.get("/published", authGuard, async (c) => {
   const db = createDb(c.env.DATABASE_URL);
 
   const all = await db.query.exams.findMany({
-    where: and(eq(exams.isPublished, true), isNull(exams.courseId)),
+    where: eq(exams.isPublished, true),
     with: {
       course: true,
     },
