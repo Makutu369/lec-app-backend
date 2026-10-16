@@ -23,7 +23,8 @@ export async function signToken(
     .setIssuedAt()
     .setIssuer(ISSUER)
     .setAudience(AUDIENCE)
-    .setExpirationTime("24h")
+    // Short-lived: clients renew it with a refresh token (POST /api/auth/refresh).
+    .setExpirationTime("1h")
     .sign(getSecretKey(secret));
 }
 
