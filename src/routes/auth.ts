@@ -4,6 +4,7 @@ import { z } from "zod";
 import { createDb } from "../db";
 import { users, passwordResets } from "../db/schema";
 import { hashPassword, comparePassword } from "../lib/password";
+import { resolveAffiliation } from "../lib/affiliation";
 import {
   issueTokenPair,
   consumeRefreshToken,
@@ -31,7 +32,9 @@ const signupSchema = z.object({
   email: z.string().email(),
   password: z.string().min(6).max(128),
   confirmPassword: z.string().min(6).max(128),
-  megaCenterId: z.string().nullable().optional(),
+  // "" from older clients means "none".
+  branchId: z.preprocess((v) => (v === "" ? null : v), z.string().max(24).nullable().optional()),
+  megaCenterId: z.preprocess((v) => (v === "" ? null : v), z.string().uuid().nullable().optional()),
   userLocation: z.string().max(200).nullable().optional(),
 }).refine((d) => d.password === d.confirmPassword, {
   message: "Passwords do not match",
@@ -108,8 +111,13 @@ auth.post("/signup", async (c) => {
     return c.json({ error: parsed.error.issues[0].message }, 400);
   }
 
-  const { firstName, lastName, email, password, megaCenterId, userLocation } = parsed.data;
+  const { firstName, lastName, email, password, branchId, megaCenterId, userLocation } = parsed.data;
   const db = createDb(c.env.DATABASE_URL);
+
+  const affiliation = await resolveAffiliation(db, { branchId, megaCenterId });
+  if (!affiliation.ok) {
+    return c.json({ error: affiliation.error }, 400);
+  }
 
   const [existing] = await db
     .select()
@@ -130,7 +138,8 @@ auth.post("/signup", async (c) => {
       lastName,
       email: email.toLowerCase().trim(),
       password: hashed,
-      megaCenter: megaCenterId || null,
+      branch: affiliation.value.branch,
+      megaCenter: affiliation.value.megaCenter,
       userLocation: userLocation || null,
       role: "student",
     })
