@@ -13,12 +13,15 @@ import {
 import { getCourseExamAccess, findCertificate } from "../lib/course-exam";
 import { EXAM_CURRENCY, isExamFree } from "../lib/exam-payment";
 import { authGuard } from "../middleware/auth";
+import { notifyEnrolled, pushConfig } from "../lib/notify";
 import type { JwtPayload } from "../lib/jwt";
 
 type Env = {
   Bindings: {
     DATABASE_URL: string;
     JWT_SECRET: string;
+    EXPO_PUSH_URL?: string;
+    EXPO_ACCESS_TOKEN?: string;
   };
   Variables: {
     user: JwtPayload;
@@ -114,6 +117,15 @@ coursesRouter.post("/:courseId/enroll", authGuard, async (c) => {
       }))
     );
   }
+
+  c.executionCtx.waitUntil(
+    notifyEnrolled(db, pushConfig(c.env), {
+      userId: user.sub,
+      courseId,
+      courseTitle: course.title,
+      lessons: courseSections.length,
+    }).catch((err) => console.error("Enrolled notification failed:", err))
+  );
 
   return c.json(enrollment, 201);
 });
