@@ -25,6 +25,8 @@ export const users = pgTable(
     lastName: varchar({ length: 100 }),
     profilePicture: varchar({ length: 500 }),
     megaCenter: varchar({ length: 255 }),
+    // Branch id (branches.id). Set from the mega center when only that is given.
+    branch: varchar({ length: 24 }),
     role: varchar({ length: 20 }).default("student").notNull(),
     password: varchar({ length: 255 }).notNull(),
     createdAt: timestamp({ mode: "string" }).defaultNow().notNull(),
@@ -129,6 +131,14 @@ export const progress = pgTable(
   ]
 );
 
+// Church branches. Ids come from the church's own system (24-hex), so they
+// are kept as-is rather than replaced with uuids.
+export const branches = pgTable("branches", {
+  id: varchar({ length: 24 }).primaryKey().notNull(),
+  name: varchar({ length: 255 }).notNull(),
+  zoneId: varchar({ length: 24 }),
+});
+
 export const megaCenters = pgTable("mega_centers", {
   id: uuid()
     .default(sql`gen_random_uuid()`)
@@ -140,7 +150,9 @@ export const megaCenters = pgTable("mega_centers", {
   head: varchar({ length: 255 }),
   email: varchar({ length: 255 }),
   phone: varchar({ length: 50 }),
-});
+  // Only some branches have mega centers; sign-up asks for one only then.
+  branchId: varchar({ length: 24 }).references(() => branches.id, { onDelete: "set null" }),
+}, (table) => [index("idx_mega_centers_branch_id").on(table.branchId)]);
 
 export const passwordResets = pgTable("password_resets", {
   id: uuid()
@@ -436,6 +448,7 @@ export type Course = typeof courses.$inferSelect;
 export type Section = typeof sections.$inferSelect;
 export type Enrollment = typeof enrollments.$inferSelect;
 export type Progress = typeof progress.$inferSelect;
+export type Branch = typeof branches.$inferSelect;
 export type MegaCenter = typeof megaCenters.$inferSelect;
 export type PasswordReset = typeof passwordResets.$inferSelect;
 export type Exam = typeof exams.$inferSelect;
