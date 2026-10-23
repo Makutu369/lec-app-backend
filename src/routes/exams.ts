@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, and, desc, inArray } from "drizzle-orm";
+import { eq, and, desc, isNotNull } from "drizzle-orm";
 import { z } from "zod";
 import { createDb } from "../db";
 import {
@@ -7,18 +7,28 @@ import {
   examEnrollments,
   questions,
   examAttempts,
-  sections,
-  progress,
+  payments,
+  users,
 } from "../db/schema";
 import { authGuard } from "../middleware/auth";
 import { adminGuard } from "../middleware/admin";
 import type { JwtPayload } from "../lib/jwt";
 import { issueCertificate } from "../lib/course-exam";
+import { initializeTransaction } from "../lib/paystack";
+import {
+  EXAM_CURRENCY,
+  isExamFree,
+  hasPaidForExam,
+  reconcilePayment,
+  latestPendingPayment,
+} from "../lib/exam-payment";
 
 type Env = {
   Bindings: {
     DATABASE_URL: string;
     JWT_SECRET: string;
+    PAYSTACK_SECRET_KEY?: string;
+    PAYSTACK_BASE_URL?: string;
   };
   Variables: {
     user: JwtPayload;
@@ -87,74 +97,31 @@ const submitExamSchema = z.object({
   answers: z.record(z.string(), z.array(z.number().int().min(0))),
 });
 
-const enrollExamSchema = z.object({
-  paid: z.boolean().optional(),
+const grantAccessSchema = z.object({
+  userId: z.string().uuid(),
 });
 
 // --- Access control helper ---
 
-async function checkExamAccess(
-  db: ReturnType<typeof createDb>,
+// Courses are free; exams are standalone and paid. A user can take an exam
+// once enrolled and either the exam is free or they have paid for it.
+// One payment covers all retakes.
+function checkExamAccess(
   exam: typeof exams.$inferSelect,
-  userId: string,
   enrollment: typeof examEnrollments.$inferSelect | undefined
-): Promise<{ allowed: boolean; reason?: string }> {
+): { allowed: boolean; reason?: string } {
   if (!enrollment) {
     return { allowed: false, reason: "You are not enrolled in this exam" };
   }
-
-  if (exam.courseId) {
-    const courseCompleted = await checkCourseCompleted(db, exam.courseId, userId);
-    if (courseCompleted) {
-      return { allowed: true };
-    }
-    if (enrollment.paidAt) {
-      return { allowed: true };
-    }
-    return {
-      allowed: false,
-      reason: "Complete the course or pay to access this exam",
-    };
-  }
-
-  if (enrollment.paidAt) {
+  if (isExamFree(exam) || enrollment.paidAt) {
     return { allowed: true };
   }
-  return { allowed: false, reason: "Payment required to access this exam" };
+  return { allowed: false, reason: "Payment required to take this exam" };
 }
 
-async function checkCourseCompleted(
-  db: ReturnType<typeof createDb>,
-  courseId: string,
-  userId: string
-): Promise<boolean> {
-  const courseSections = await db
-    .select()
-    .from(sections)
-    .where(eq(sections.courseId, courseId));
-
-  if (courseSections.length === 0) {
-    return false;
-  }
-
-  const userProgress = await db
-    .select()
-    .from(progress)
-    .where(
-      and(
-        eq(progress.userId, userId),
-        inArray(
-          progress.sectionId,
-          courseSections.map((s) => s.id)
-        )
-      )
-    );
-
-  const completedIds = new Set(
-    userProgress.filter((p) => p.completed).map((p) => p.sectionId)
-  );
-
-  return courseSections.every((s) => completedIds.has(s.id));
+function paystackConfig(env: Env["Bindings"]) {
+  if (!env.PAYSTACK_SECRET_KEY) return null;
+  return { secretKey: env.PAYSTACK_SECRET_KEY, baseUrl: env.PAYSTACK_BASE_URL };
 }
 
 // --- Admin endpoints ---
@@ -249,9 +216,8 @@ examsRouter.get("/", authGuard, adminGuard, async (c) => {
 });
 
 // GET /api/exams/published - user listing, must be before /:id.
-// Includes course exams with their `course`, so the app can list them and
-// send students to the course; take/submit still require the course to be
-// completed (or the exam paid for).
+// All published exams (standalone, or suggested at the end of a `course`),
+// with the price info and whether the current user has paid.
 examsRouter.get("/published", authGuard, async (c) => {
   const db = createDb(c.env.DATABASE_URL);
 
@@ -263,7 +229,21 @@ examsRouter.get("/published", authGuard, async (c) => {
     orderBy: (exams, { desc }) => [desc(exams.createdAt)],
   });
 
-  return c.json(all);
+  const user = c.get("user");
+  const paidRows = await db
+    .select({ examId: examEnrollments.examId })
+    .from(examEnrollments)
+    .where(and(eq(examEnrollments.userId, user.sub), isNotNull(examEnrollments.paidAt)));
+  const paidIds = new Set(paidRows.map((r) => r.examId));
+
+  return c.json(
+    all.map((exam) => ({
+      ...exam,
+      currency: EXAM_CURRENCY,
+      free: isExamFree(exam),
+      paid: paidIds.has(exam.id),
+    }))
+  );
 });
 
 examsRouter.get("/:id", authGuard, adminGuard, async (c) => {
@@ -467,18 +447,6 @@ examsRouter.post("/:id/enroll", authGuard, async (c) => {
   const { id } = c.req.param();
   const user = c.get("user");
 
-  let body: unknown;
-  try {
-    body = await c.req.json();
-  } catch {
-    body = {};
-  }
-
-  const parsed = enrollExamSchema.safeParse(body);
-  if (!parsed.success) {
-    return c.json({ error: parsed.error.issues[0].message }, 400);
-  }
-
   const db = createDb(c.env.DATABASE_URL);
 
   const [exam] = await db
@@ -506,23 +474,19 @@ examsRouter.post("/:id/enroll", authGuard, async (c) => {
     return c.json({ error: "Already enrolled in this exam" }, 409);
   }
 
-  if (!exam.courseId && !parsed.data.paid) {
-    return c.json({ error: "Payment required to enroll in this exam" }, 402);
-  }
-
+  // Enrolling is free; paid exams are unlocked by a verified payment
+  // (POST /:id/checkout), never by the client claiming it paid.
   const [enrollment] = await db
     .insert(examEnrollments)
-    .values({
-      userId: user.sub,
-      examId: id,
-      paidAt: parsed.data.paid ? new Date().toISOString() : null,
-    })
+    .values({ userId: user.sub, examId: id })
     .returning();
 
   return c.json(enrollment, 201);
 });
 
-examsRouter.post("/:id/confirm-payment", authGuard, async (c) => {
+// POST /api/exams/:id/checkout - start a Paystack payment for a paid exam.
+// The amount always comes from the exam's price in the database.
+examsRouter.post("/:id/checkout", authGuard, async (c) => {
   const { id } = c.req.param();
   const user = c.get("user");
   const db = createDb(c.env.DATABASE_URL);
@@ -530,44 +494,130 @@ examsRouter.post("/:id/confirm-payment", authGuard, async (c) => {
   const [exam] = await db
     .select()
     .from(exams)
-    .where(eq(exams.id, id))
+    .where(and(eq(exams.id, id), eq(exams.isPublished, true)))
     .limit(1);
 
+  if (!exam) {
+    return c.json({ error: "Exam not found or not published" }, 404);
+  }
+  if (isExamFree(exam)) {
+    return c.json({ error: "This exam is free" }, 400);
+  }
+  if (await hasPaidForExam(db, user.sub, id)) {
+    return c.json({ paid: true });
+  }
+
+  const config = paystackConfig(c.env);
+  if (!config) {
+    return c.json({ error: "Payments are not available yet. Please try again later." }, 503);
+  }
+
+  const [account] = await db
+    .select({ email: users.email })
+    .from(users)
+    .where(eq(users.id, user.sub))
+    .limit(1);
+  if (!account) {
+    return c.json({ error: "User not found" }, 404);
+  }
+
+  const reference = `lec_${crypto.randomUUID().replace(/-/g, "")}`;
+  const amount = exam.price as number;
+
+  await db.insert(payments).values({
+    userId: user.sub,
+    examId: id,
+    reference,
+    amount,
+    currency: EXAM_CURRENCY,
+  });
+
+  const callbackUrl = `${new URL(c.req.url).origin}/api/payments/paystack/callback`;
+
+  try {
+    const { authorizationUrl } = await initializeTransaction(config, {
+      email: account.email,
+      amount,
+      currency: EXAM_CURRENCY,
+      reference,
+      callbackUrl,
+      metadata: { userId: user.sub, examId: id },
+    });
+    return c.json({ authorizationUrl, reference, amount, currency: EXAM_CURRENCY });
+  } catch (err) {
+    console.error("Paystack initialize failed:", err);
+    await db.update(payments).set({ status: "failed" }).where(eq(payments.reference, reference));
+    return c.json({ error: "Couldn't start the payment. Please try again." }, 502);
+  }
+});
+
+// GET /api/exams/:id/payment-status - whether the user has paid. Also checks
+// a pending payment with Paystack, in case the webhook hasn't arrived yet.
+examsRouter.get("/:id/payment-status", authGuard, async (c) => {
+  const { id } = c.req.param();
+  const user = c.get("user");
+  const db = createDb(c.env.DATABASE_URL);
+
+  const [exam] = await db.select().from(exams).where(eq(exams.id, id)).limit(1);
   if (!exam) {
     return c.json({ error: "Exam not found" }, 404);
   }
 
+  const free = isExamFree(exam);
+  let paid = await hasPaidForExam(db, user.sub, id);
+
+  if (!free && !paid) {
+    const config = paystackConfig(c.env);
+    const pending = await latestPendingPayment(db, user.sub, id);
+    if (config && pending) {
+      try {
+        paid = await reconcilePayment(db, config, pending);
+      } catch (err) {
+        console.error("Paystack verify failed:", err);
+      }
+    }
+  }
+
+  return c.json({
+    free,
+    paid,
+    price: exam.price ?? 0,
+    currency: EXAM_CURRENCY,
+  });
+});
+
+// POST /api/exams/:id/grant-access {userId} - admin: mark an exam as paid for
+// a user (e.g. paid in cash at church).
+examsRouter.post("/:id/grant-access", authGuard, adminGuard, async (c) => {
+  const { id } = c.req.param();
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+  const parsed = grantAccessSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: parsed.error.issues[0].message }, 400);
+  }
+
+  const db = createDb(c.env.DATABASE_URL);
+  const [exam] = await db.select().from(exams).where(eq(exams.id, id)).limit(1);
+  if (!exam) {
+    return c.json({ error: "Exam not found" }, 404);
+  }
+
+  const now = new Date().toISOString();
   const [enrollment] = await db
-    .select()
-    .from(examEnrollments)
-    .where(
-      and(
-        eq(examEnrollments.userId, user.sub),
-        eq(examEnrollments.examId, id)
-      )
-    )
-    .limit(1);
-
-  if (!enrollment) {
-    return c.json({ error: "You are not enrolled in this exam" }, 403);
-  }
-
-  if (enrollment.paidAt) {
-    return c.json({ error: "Payment already confirmed" }, 409);
-  }
-
-  const [updated] = await db
-    .update(examEnrollments)
-    .set({ paidAt: new Date().toISOString() })
-    .where(
-      and(
-        eq(examEnrollments.userId, user.sub),
-        eq(examEnrollments.examId, id)
-      )
-    )
+    .insert(examEnrollments)
+    .values({ userId: parsed.data.userId, examId: id, paidAt: now })
+    .onConflictDoUpdate({
+      target: [examEnrollments.userId, examEnrollments.examId],
+      set: { paidAt: now },
+    })
     .returning();
 
-  return c.json(updated);
+  return c.json(enrollment);
 });
 
 examsRouter.get("/:id/take", authGuard, async (c) => {
@@ -599,7 +649,7 @@ examsRouter.get("/:id/take", authGuard, async (c) => {
     )
     .limit(1);
 
-  const access = await checkExamAccess(db, exam, user.sub, enrollment);
+  const access = checkExamAccess(exam, enrollment);
   if (!access.allowed) {
     return c.json({ error: access.reason }, 403);
   }
@@ -663,7 +713,7 @@ examsRouter.post("/:id/submit", authGuard, async (c) => {
     )
     .limit(1);
 
-  const access = await checkExamAccess(db, exam, user.sub, enrollment);
+  const access = checkExamAccess(exam, enrollment);
   if (!access.allowed) {
     return c.json({ error: access.reason }, 403);
   }
