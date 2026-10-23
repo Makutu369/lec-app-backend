@@ -14,6 +14,7 @@ import { authGuard } from "../middleware/auth";
 import { adminGuard } from "../middleware/admin";
 import type { JwtPayload } from "../lib/jwt";
 import { issueCertificate } from "../lib/course-exam";
+import { notifyCertificateEarned, notifyPaid, pushConfig } from "../lib/notify";
 import { initializeTransaction } from "../lib/paystack";
 import {
   EXAM_CURRENCY,
@@ -29,6 +30,8 @@ type Env = {
     JWT_SECRET: string;
     PAYSTACK_SECRET_KEY?: string;
     PAYSTACK_BASE_URL?: string;
+    EXPO_PUSH_URL?: string;
+    EXPO_ACCESS_TOKEN?: string;
   };
   Variables: {
     user: JwtPayload;
@@ -571,7 +574,9 @@ examsRouter.get("/:id/payment-status", authGuard, async (c) => {
     const pending = await latestPendingPayment(db, user.sub, id);
     if (config && pending) {
       try {
-        paid = await reconcilePayment(db, config, pending);
+        paid = await reconcilePayment(db, config, pending, async (p) => {
+          c.executionCtx.waitUntil(notifyPaid(db, pushConfig(c.env), p));
+        });
       } catch (err) {
         console.error("Paystack verify failed:", err);
       }
@@ -773,6 +778,17 @@ examsRouter.post("/:id/submit", authGuard, async (c) => {
         score,
       })
     : null;
+
+  // Deduped per certificate, so passing again doesn't notify again.
+  if (certificate) {
+    c.executionCtx.waitUntil(
+      notifyCertificateEarned(db, pushConfig(c.env), {
+        userId: user.sub,
+        certificateId: certificate.id,
+        examTitle: exam.title,
+      })
+    );
+  }
 
   return c.json({
     attemptId: attempt.id,

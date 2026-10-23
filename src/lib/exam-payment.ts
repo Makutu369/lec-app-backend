@@ -25,15 +25,17 @@ export async function hasPaidForExam(
 
 /**
  * Mark a payment successful and give the user access to its exam.
- * Idempotent: safe to call from both the webhook and status polling.
+ * Idempotent: safe to call from the webhook, status polling and the cron.
+ * Returns true when this call is the one that confirmed it.
  */
-export async function fulfillPayment(db: Db, payment: Payment): Promise<void> {
+export async function fulfillPayment(db: Db, payment: Payment): Promise<boolean> {
   const now = new Date().toISOString();
 
-  await db
+  const updated = await db
     .update(payments)
     .set({ status: "success", paidAt: now })
-    .where(and(eq(payments.id, payment.id), eq(payments.status, "pending")));
+    .where(and(eq(payments.id, payment.id), eq(payments.status, "pending")))
+    .returning({ id: payments.id });
 
   await db
     .insert(examEnrollments)
@@ -57,6 +59,9 @@ export async function fulfillPayment(db: Db, payment: Payment): Promise<void> {
       .set({ paidAt: now })
       .where(eq(examEnrollments.id, enrollment.id));
   }
+
+  // True only for the call that moved it from pending to success.
+  return updated.length > 0;
 }
 
 /**
@@ -66,7 +71,8 @@ export async function fulfillPayment(db: Db, payment: Payment): Promise<void> {
 export async function reconcilePayment(
   db: Db,
   config: PaystackConfig,
-  payment: Payment
+  payment: Payment,
+  onConfirmed?: (payment: Payment) => Promise<void>
 ): Promise<boolean> {
   if (payment.status === "success") return true;
 
@@ -77,7 +83,7 @@ export async function reconcilePayment(
     tx.currency.toUpperCase() === payment.currency.toUpperCase();
 
   if (paidInFull) {
-    await fulfillPayment(db, payment);
+    if ((await fulfillPayment(db, payment)) && onConfirmed) await onConfirmed(payment);
     return true;
   }
   if (tx.status === "failed" || tx.status === "abandoned") {
