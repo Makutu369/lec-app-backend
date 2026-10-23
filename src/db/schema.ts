@@ -298,6 +298,42 @@ export const certificates = pgTable(
   ]
 );
 
+// One row per checkout attempt. `amount` is in the currency's minor unit
+// (pesewas for GHS), copied from the exam price when checkout starts.
+export const payments = pgTable(
+  "payments",
+  {
+    id: uuid()
+      .default(sql`gen_random_uuid()`)
+      .primaryKey()
+      .notNull(),
+    userId: uuid().notNull(),
+    examId: uuid().notNull(),
+    provider: varchar({ length: 16 }).default("paystack").notNull(),
+    reference: varchar({ length: 64 }).notNull(),
+    amount: integer().notNull(),
+    currency: varchar({ length: 3 }).default("GHS").notNull(),
+    // pending | success | failed
+    status: varchar({ length: 16 }).default("pending").notNull(),
+    createdAt: timestamp({ mode: "string" }).defaultNow().notNull(),
+    paidAt: timestamp({ mode: "string" }),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "FK_payments_user",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.examId],
+      foreignColumns: [exams.id],
+      name: "FK_payments_exam",
+    }).onDelete("cascade"),
+    unique("UQ_payments_reference").on(table.reference),
+    index("idx_payments_user_exam").on(table.userId, table.examId),
+  ]
+);
+
 // Long-lived sessions. Only a SHA-256 hash of each refresh token is stored;
 // tokens are single-use and rotated on every refresh.
 export const refreshTokens = pgTable(
@@ -339,3 +375,4 @@ export type Question = typeof questions.$inferSelect;
 export type NewQuestion = typeof questions.$inferInsert;
 export type ExamAttempt = typeof examAttempts.$inferSelect;
 export type Certificate = typeof certificates.$inferSelect;
+export type Payment = typeof payments.$inferSelect;
