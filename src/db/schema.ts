@@ -29,6 +29,9 @@ export const users = pgTable(
     password: varchar({ length: 255 }).notNull(),
     createdAt: timestamp({ mode: "string" }).defaultNow().notNull(),
     userLocation: varchar({ length: 200 }),
+    // Reminder pushes (inactivity, exam ready, unfinished payment). Event
+    // notifications such as "payment confirmed" are always sent.
+    notifyReminders: boolean().default(true).notNull(),
   },
   (table) => [
     unique("UQ_97672ac88f789774dd47f7c8be3").on(table.email),
@@ -334,6 +337,73 @@ export const payments = pgTable(
   ]
 );
 
+// Expo push tokens, one row per device. A token moves to whoever signed in
+// on that device most recently.
+export const pushTokens = pgTable(
+  "push_tokens",
+  {
+    id: uuid()
+      .default(sql`gen_random_uuid()`)
+      .primaryKey()
+      .notNull(),
+    userId: uuid().notNull(),
+    token: varchar({ length: 255 }).notNull(),
+    platform: varchar({ length: 16 }),
+    createdAt: timestamp({ mode: "string" }).defaultNow().notNull(),
+    // Updated whenever the app registers on launch: our "last active" signal.
+    lastSeenAt: timestamp({ mode: "string" }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "FK_push_tokens_user",
+    }).onDelete("cascade"),
+    unique("UQ_push_tokens_token").on(table.token),
+    index("idx_push_tokens_user_id").on(table.userId),
+  ]
+);
+
+// In-app inbox. Every push is also stored here, so nothing is lost if the
+// push is missed. `dedupeKey` stops the same reminder being sent twice.
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: uuid()
+      .default(sql`gen_random_uuid()`)
+      .primaryKey()
+      .notNull(),
+    userId: uuid().notNull(),
+    type: varchar({ length: 32 }).notNull(),
+    title: varchar({ length: 200 }).notNull(),
+    body: text().notNull(),
+    data: jsonb(),
+    dedupeKey: varchar({ length: 128 }),
+    readAt: timestamp({ mode: "string" }),
+    createdAt: timestamp({ mode: "string" }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "FK_notifications_user",
+    }).onDelete("cascade"),
+    unique("UQ_notifications_user_dedupe").on(table.userId, table.dedupeKey),
+    index("idx_notifications_user_created").on(table.userId, table.createdAt),
+  ]
+);
+
+// Expo push tickets awaiting a delivery receipt (checked ~15 min later).
+export const pushTickets = pgTable(
+  "push_tickets",
+  {
+    id: varchar({ length: 64 }).primaryKey().notNull(),
+    token: varchar({ length: 255 }).notNull(),
+    createdAt: timestamp({ mode: "string" }).defaultNow().notNull(),
+  },
+  (table) => [index("idx_push_tickets_created").on(table.createdAt)]
+);
+
 // Long-lived sessions. Only a SHA-256 hash of each refresh token is stored;
 // tokens are single-use and rotated on every refresh.
 export const refreshTokens = pgTable(
@@ -376,3 +446,5 @@ export type NewQuestion = typeof questions.$inferInsert;
 export type ExamAttempt = typeof examAttempts.$inferSelect;
 export type Certificate = typeof certificates.$inferSelect;
 export type Payment = typeof payments.$inferSelect;
+export type PushToken = typeof pushTokens.$inferSelect;
+export type Notification = typeof notifications.$inferSelect;

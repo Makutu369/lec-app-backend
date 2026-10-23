@@ -43,6 +43,13 @@
       "when": 1792715788003,
       "tag": "0005_payments",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792758259768,
+      "tag": "0006_push_notifications",
+      "breakpoints": true
     }
   ]
 }
