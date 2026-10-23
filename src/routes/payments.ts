@@ -4,12 +4,15 @@ import { createDb } from "../db";
 import { payments } from "../db/schema";
 import { isValidWebhookSignature } from "../lib/paystack";
 import { fulfillPayment } from "../lib/exam-payment";
+import { notifyPaid, pushConfig } from "../lib/notify";
 
 type Env = {
   Bindings: {
     DATABASE_URL: string;
     JWT_SECRET: string;
     PAYSTACK_SECRET_KEY?: string;
+    EXPO_PUSH_URL?: string;
+    EXPO_ACCESS_TOKEN?: string;
   };
 };
 
@@ -54,7 +57,9 @@ paymentsRouter.post("/paystack/webhook", async (c) => {
       (event.data.currency ?? "").toUpperCase() === payment.currency.toUpperCase();
 
     if (paidInFull) {
-      await fulfillPayment(db, payment);
+      if (await fulfillPayment(db, payment)) {
+        c.executionCtx.waitUntil(notifyPaid(db, pushConfig(c.env), payment));
+      }
     } else {
       console.warn("Webhook for unknown or short payment:", event.data.reference);
     }
