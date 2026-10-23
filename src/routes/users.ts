@@ -2,9 +2,10 @@ import { Hono } from "hono";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { createDb } from "../db";
-import { megaCenters, users } from "../db/schema";
+import { users } from "../db/schema";
 import { authGuard } from "../middleware/auth";
 import type { JwtPayload } from "../lib/jwt";
+import { resolveAffiliation } from "../lib/affiliation";
 
 type Env = {
   Bindings: {
@@ -25,6 +26,9 @@ const updateMeSchema = z
     userLocation: z.string().trim().max(200).nullable(),
     // Mega center id (users.megaCenter stores the id).
     megaCenter: z.string().uuid().nullable(),
+    // Branch id (users.branch). Changing branch needs that branch's mega
+    // center too, if it has any.
+    branch: z.string().max(24).nullable(),
   })
   .partial()
   .refine((d) => Object.keys(d).length > 0, "Nothing to update");
@@ -45,7 +49,7 @@ usersRouter.get("/me", authGuard, async (c) => {
   return c.json(sanitize(user));
 });
 
-// PATCH /api/users/me - edit profile (name, location, mega center).
+// PATCH /api/users/me - edit profile (name, location, branch, mega center).
 // Email and role are not editable here.
 usersRouter.patch("/me", authGuard, async (c) => {
   let body: unknown;
@@ -60,20 +64,34 @@ usersRouter.patch("/me", authGuard, async (c) => {
   }
 
   const db = createDb(c.env.DATABASE_URL);
-  if (parsed.data.megaCenter) {
-    const [center] = await db
-      .select({ id: megaCenters.id })
-      .from(megaCenters)
-      .where(eq(megaCenters.id, parsed.data.megaCenter))
+  const { branch, megaCenter, ...rest } = parsed.data;
+  const changes: Partial<typeof users.$inferInsert> = rest;
+
+  if (branch !== undefined || megaCenter !== undefined) {
+    const [current] = await db
+      .select({ branch: users.branch, megaCenter: users.megaCenter })
+      .from(users)
+      .where(eq(users.id, c.get("user").sub))
       .limit(1);
-    if (!center) {
-      return c.json({ error: "Mega center not found" }, 404);
+    if (!current) {
+      return c.json({ error: "User not found" }, 404);
     }
+    // Only a mega center given: its branch wins. Only a branch given: keep the
+    // current mega center if it's the same branch, else one must be picked.
+    const affiliation = await resolveAffiliation(db, {
+      branchId: branch !== undefined ? branch : megaCenter ? undefined : current.branch,
+      megaCenterId:
+        megaCenter !== undefined ? megaCenter : branch === current.branch ? current.megaCenter : null,
+    });
+    if (!affiliation.ok) {
+      return c.json({ error: affiliation.error }, 400);
+    }
+    Object.assign(changes, affiliation.value);
   }
 
   const [updated] = await db
     .update(users)
-    .set(parsed.data)
+    .set(changes)
     .where(eq(users.id, c.get("user").sub))
     .returning();
   if (!updated) {
