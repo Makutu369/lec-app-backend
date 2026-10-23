@@ -6,6 +6,7 @@ import { sendPushes, tokensForUsers, type ExpoPushConfig } from "./expo-push";
 export type NotificationType =
   | "payment_confirmed"
   | "certificate_earned"
+  | "course_enrolled"
   | "reminder_continue_course"
   | "reminder_exam_ready"
   | "reminder_finish_payment"
@@ -128,6 +129,25 @@ export async function notifyCertificateEarned(
       body: `You passed "${c.examTitle}" and earned your certificate.`,
       data: { url: "/(exams)/certificate", params: { certificateId: c.certificateId } },
       dedupeKey: `certificate:${c.certificateId}`,
+    },
+  ]);
+}
+
+export async function notifyEnrolled(
+  db: Db,
+  config: ExpoPushConfig,
+  e: { userId: string; courseId: string; courseTitle: string; lessons: number }
+): Promise<void> {
+  const lessons = e.lessons === 1 ? "1 lesson" : `${e.lessons} lessons`;
+  await notifyUsers(db, config, [
+    {
+      userId: e.userId,
+      type: "course_enrolled",
+      title: `You're enrolled in ${e.courseTitle} 🎉`,
+      body: e.lessons > 0 ? `${lessons} waiting for you. Start with lesson 1 whenever you're ready.` : "Tap to open the course.",
+      data: { url: "/(screens)/course-detail", params: { courseId: e.courseId } },
+      // Once per course: re-enrolling never notifies again.
+      dedupeKey: `enrolled:${e.courseId}`,
     },
   ]);
 }
