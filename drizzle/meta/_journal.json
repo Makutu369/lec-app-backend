@@ -36,6 +36,13 @@
       "when": 1792105103252,
       "tag": "0004_certificates",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792715788003,
+      "tag": "0005_payments",
+      "breakpoints": true
     }
   ]
 }

@@ -11,6 +11,7 @@ import {
   examAttempts,
 } from "../db/schema";
 import { getCourseExamAccess, findCertificate } from "../lib/course-exam";
+import { EXAM_CURRENCY, isExamFree } from "../lib/exam-payment";
 import { authGuard } from "../middleware/auth";
 import type { JwtPayload } from "../lib/jwt";
 
@@ -151,9 +152,10 @@ coursesRouter.get("/:courseId/progress", authGuard, async (c) => {
   });
 });
 
-// GET /api/courses/:courseId/exam - the course's final exam with the current
-// user's standing: lesson progress, whether it's unlocked (all lessons done,
-// or paid), best score and certificate.
+// GET /api/courses/:courseId/exam - the exam suggested at the end of this
+// course, with the current user's standing: lesson progress (informational —
+// exams are standalone and don't require the course), price, whether it's
+// unlocked (free or paid), best score and certificate.
 coursesRouter.get("/:courseId/exam", authGuard, async (c) => {
   const { courseId } = c.req.param();
   const user = c.get("user");
@@ -192,8 +194,11 @@ coursesRouter.get("/:courseId/exam", authGuard, async (c) => {
   return c.json({
     exam,
     ...access,
-    // Matches the take/submit rule: course completed, or exam paid for.
-    unlocked: access.unlocked || Boolean(examEnrollment?.paidAt),
+    currency: EXAM_CURRENCY,
+    free: isExamFree(exam),
+    paid: Boolean(examEnrollment?.paidAt),
+    // Matches the take/submit rule: free, or paid for.
+    unlocked: isExamFree(exam) || Boolean(examEnrollment?.paidAt),
     attemptsCount: attempts.length,
     bestScore: attempts.length
       ? Math.max(...attempts.map((a) => a.score))
