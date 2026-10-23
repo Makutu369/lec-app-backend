@@ -13,7 +13,6 @@ type Env = {
 
 export const adminGuard = createMiddleware<Env>(async (c, next) => {
   const user = c.get("user");
-  console.log(user);
 
   if (!user || user.role !== "admin") {
     return c.json({ error: "Admin access required" }, 403);
