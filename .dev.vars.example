@@ -9,3 +9,9 @@ JWT_SECRET=your-jwt-secret-here
 # every row, so this must NOT be the DATABASE_URL above; they refuse to run
 # without it.
 TEST_DATABASE_URL=postgresql://username:password@ep-xxxxx-test.us-east-2.aws.neon.tech/dbname?sslmode=require
+
+# Paystack (https://dashboard.paystack.com → Settings → API Keys & Webhooks).
+# Use sk_test_... while testing, sk_live_... in production. In production set
+# it with `npx wrangler secret put PAYSTACK_SECRET_KEY`. Exams with a price
+# can't be bought until this is set (checkout returns 503).
+PAYSTACK_SECRET_KEY=sk_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
