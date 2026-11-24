@@ -45,11 +45,11 @@
   },
   "private": true,
   "scripts": {
-    "build": "node init && tsc -b && vite build",
+    "build": "tsc -b && vite build",
     "cf-typegen": "wrangler types",
     "check": "tsc && vite build && wrangler deploy --dry-run",
     "deploy": "npm run build && wrangler deploy",
-    "dev": "node init && vite",
+    "dev": "vite",
     "lint": "eslint .",
     "preview": "npm run build && vite preview",
     "db:generate": "drizzle-kit generate",
